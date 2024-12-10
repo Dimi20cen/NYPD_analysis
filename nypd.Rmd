@@ -1,0 +1,384 @@
+---
+title: "Analysis of NYPD Shooting Incidents"
+author: "Dimitris"
+date: "2024-11-22"
+output: html_document
+---
+
+## Introduction
+
+Understanding the patterns and trends in shooting incidents is crucial for public safety, policy-making, and community relations.
+
+This analysis explores the NYPD Shooting Incident Data with the goal of uncovering spatial and temporal trends, identify hotspots, and explore factors associated with lethal and non-lethal shootings in New York City. The data set is publicly available [here](https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic).
+
+The analysis involves cleaning and tidying the data, visualizing key insights, and performing a simple model to identify potential factors associated with shootings. Biases in the data and their implications will also be discussed.
+
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Libraries
+
+To install all required packages in a single command you can use `install.packages(c("sf", "tidyverse", "forecast", "zoo", "reshape2"))`
+
+```{r}
+library(sf)         # For spatial data handling
+library(tidyverse)
+library(zoo)        # For creating a time series object
+library(forecast)   # For time series forecasting
+library(reshape2)   # For using the melt function in modelling
+
+```
+
+## Import Data
+
+```{r}
+# URL of Dataset
+url = "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+# Importing Dataset
+data = read.csv(url)
+
+# Preview the first 10 rows
+head(data, 10)
+```
+
+## Data Exploration
+
+```{r}
+# Examine the structure of the dataset
+str(data)
+
+# Summary statistics
+summary(data)
+```
+
+## Missing Values Analysis
+
+```{r}
+# Replace empty strings with NA
+data[data == ""] = NA
+
+# Calculate missing values per column
+missing_values = colSums(is.na(data))
+missing_values
+```
+
+## Preliminary Data Cleaning
+
+```{r}
+# Select relevant columns for analysis
+clean_data = data %>% 
+  select(
+    OCCUR_DATE, OCCUR_TIME, Latitude, Longitude, 
+    STATISTICAL_MURDER_FLAG
+  )
+
+# Remove 59 rows with missing Latitude/Longitude
+clean_data = clean_data %>%
+  filter(!is.na(Latitude), !is.na(Longitude))
+
+# Convert OCCUR_TIME to numeric hour
+clean_data$OCCUR_TIME = as.numeric(substr(clean_data$OCCUR_TIME, 1, 2))
+
+# Convert OCCUR_DATE to Date format
+clean_data$OCCUR_DATE = as.Date(clean_data$OCCUR_DATE, format = "%m/%d/%Y")
+
+# Extract Year and Month for temporal analysis
+clean_data = clean_data %>%
+  mutate(
+    OCCUR_YEAR = as.numeric(format(OCCUR_DATE, "%Y")),
+    OCCUR_MONTH = as.numeric(format(OCCUR_DATE, "%m"))
+  )
+
+# Preview cleaned data
+head(clean_data, 10)
+```
+
+## Exploratory Data Analysis
+
+#### Spatial Distribution of Shootings
+
+```{r}
+# Load NYC map shapefile
+# I downloaded said shapefile from "https://data.cityofnewyork.us/City-Government/Borough-Boundaries/tqmj-j8zm"
+nyc_map = st_read("../geo_export_653555bb-6b25-48e9-b5f2-f1aa6f68d742.shp")
+
+# Split data into lethal and non-lethal shootings
+lethal_shootings= clean_data  %>% filter(STATISTICAL_MURDER_FLAG == "true")
+non_lethal_shootings = clean_data  %>% filter(STATISTICAL_MURDER_FLAG == "false")
+
+# Convert to spatial objects
+lethal_sf = st_as_sf(lethal_shootings, coords = c("Longitude", "Latitude"), crs = 4326)
+non_lethal_sf = st_as_sf(non_lethal_shootings, coords = c("Longitude", "Latitude"), crs = 4326)
+
+# Plot lethal shootings
+ggplot() +
+  geom_sf(data = nyc_map, fill = "gray90", color = "black") +
+  geom_sf(data = lethal_sf, color = "darkred", size = 1, alpha = 0.6) +
+  theme_minimal() +
+  labs(
+    title = "Spatial Distribution of Lethal Shootings in NYC",
+       x = "Longitude", y = "Latitude",
+    )
+
+# Plot non-lethal shootings
+ggplot() +
+  geom_sf(data = nyc_map, fill = "gray90", color = "black") +
+  geom_sf(data = non_lethal_sf, color = "blue", size = 1, alpha = 0.6) +
+  theme_minimal() +
+  labs(
+    title = "Spatial Distribution of non-Lethal Shootings in NYC",
+       x = "Longitude", y = "Latitude",
+    )
+
+# Interpretation:
+# The maps of Lethal and non-Lethal shootings illustrates that their spread is similar, I was looking for possibly finding hotspots where lethal shooting are disportionally more/less than non-lethal shootings,
+
+```
+
+#### Heatmap of Shooting Density
+
+```{r}
+ggplot() +
+  geom_sf(data = nyc_map, fill = "gray90", color = "black") +
+  stat_density_2d(
+    data = clean_data,
+    aes(x = Longitude, y = Latitude, fill = after_stat(level)),
+    geom = "polygon",
+    alpha = 0.6
+  ) +
+  scale_fill_gradient(low = "blue", high = "red") +
+  theme_minimal() +
+  labs(
+    title = "Heatmap of Shooting Density in NYC",
+    x = "Longitude", y = "Latitude",
+    fill = "Density"
+  )
+
+# Interpretation:
+# The heatmap highlights areas with higher concentrations of shootings, useful for identifying high-risk zones.
+```
+
+#### Shootings by Hour of Day
+
+```{r}
+# Overall shootings by hour
+ggplot(clean_data, aes(x = OCCUR_TIME)) +
+  geom_histogram(binwidth = 1, fill = "orange", color = "black") +
+  labs(
+    title = "Shootings by Hour of Day",
+    x = "Hour of Day", y = "Number of Shootings"
+  ) +
+  theme_minimal()
+
+# Lethal shootings by hour
+ggplot(lethal_shootings, aes(x = OCCUR_TIME)) +
+  geom_histogram(binwidth = 1, fill = "darkred", color = "black") +
+  labs(
+    title = "Lethal Shootings by Hour of Day",
+    x = "Hour of Day", y = "Number of Lethal Shootings"
+  ) +
+  theme_minimal()
+
+# Non-lethal shootings by hour
+ggplot(non_lethal_shootings, aes(x = OCCUR_TIME)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
+  labs(
+    title = "Non-Lethal Shootings by Hour of Day",
+    x = "Hour of Day", y = "Number of Non-Lethal Shootings"
+  ) +
+  theme_minimal()
+
+# Interpretation:
+# The distributions indicate peak hours for shootings, which may correlate with nightlife or other social activities.
+```
+
+#### Shootings Over Time
+
+```{r}
+# Plot shootings by year
+ggplot(clean_data, aes(x = OCCUR_YEAR)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black") +
+  labs(
+    title = "Annual Shooting Incidents in NYC",
+    x = "Year", y = "Number of Shootings"
+  ) +
+  theme_minimal()
+
+# Plot shootings by month
+ggplot(clean_data, aes(x = OCCUR_MONTH)) +
+  geom_histogram(binwidth = 1, fill = "seagreen", color = "black") +
+  labs(
+    title = "Monthly Shooting Incidents in NYC",
+    x = "Month", y = "Number of Shootings"
+  ) +
+  theme_minimal()
+
+# Interpretation:
+# The effects of COVID-19 on the number of shooting is clearly visible, the number of shootings plummets with the introduction of quarantine measures and spikes with the end of quarantine
+
+# There also seems to exist a seasonal trend where shootings steadily increase, peaking during summer and then steadily decrease to a low point in the winter
+```
+
+## Time Series Analysis
+
+#### Preparing Time Series Data
+
+```{r}
+# Aggregate data by month and year
+monthly_data = clean_data %>%
+  group_by(OCCUR_YEAR, OCCUR_MONTH) %>%
+  summarise(total_shootings = n(), .groups = 'drop') %>%
+  arrange(OCCUR_YEAR, OCCUR_MONTH)
+
+# Create a date column for time series
+monthly_data$date = as.Date(paste(monthly_data$OCCUR_YEAR, monthly_data$OCCUR_MONTH, "01", sep = "-"))
+
+# Convert to time series object
+shooting_ts = zoo(monthly_data$total_shootings, monthly_data$date)
+
+```
+
+#### Visualizing the Time Series
+
+```{r}
+ggplot(monthly_data, aes(x = date, y = total_shootings)) +
+  geom_line(color = "blue") +
+  labs(
+    title = "Monthly Shooting Incidents in NYC",
+    x = "Date", y = "Number of Shootings"
+  ) +
+  theme_minimal()
+
+# Interpretation:
+# This plot illustrates a combination of the seasonal trend and the yearly trend of shootings, that we clearly saw in the graphs above
+```
+
+#### Decomposing the Time Series
+
+```{r}
+# Convert to ts object for decomposition
+ts_data = ts(monthly_data$total_shootings, start = c(min(monthly_data$OCCUR_YEAR), min(monthly_data$OCCUR_MONTH)), frequency = 12)
+
+# Decompose the time series
+decomposed = decompose(ts_data)
+plot(decomposed)
+
+# Interpretation:
+# The decomposition reveals the trend, seasonal, and random components of the shooting incidents over time. Again, the same Interpretation as with the graph before that but here the composition is even more clear
+```
+
+## Modeling
+
+#### Exponential Smoothing(ETS) Model
+
+The **ETS model** (Exponential Smoothing State Space Model) is a forecasting technique used to model and predict time series data
+
+```{r}
+# Fit ETS model
+set.seed(42)  # For reproducibility
+fit_ets = ets(ts_data)
+
+# Summarize the ETS model
+summary(fit_ets)
+
+# Forecast the next 12 months
+forecast_ets = forecast(fit_ets, h = 12)
+
+# Plot the forecast
+autoplot(forecast_ets) +
+  labs(
+    title = "Forecast of Monthly Shooting Incidents (ETS Model)",
+    x = "Year", y = "Number of Shootings"
+  ) +
+  theme_minimal()
+```
+
+#### Comparing Actual Data with Model Prediction
+
+```{r}
+# Generate in-sample forecasts
+forecast_ets = fitted(fit_ets)
+
+# Combine actual data and model predictions
+comparison_df = data.frame(
+  date = monthly_data$date,
+  actual = as.numeric(ts_data),
+  ETS = as.numeric(forecast_ets)
+)
+
+# Reshape for plotting
+comparison_melted = melt(comparison_df, id.vars = "date", variable.name = "Model", value.name = "Shootings")
+
+# Plot comparison
+ggplot(comparison_melted, aes(x = date, y = Shootings, color = Model)) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Comparison of Actual Data and Model Prediction",
+    x = "Date", y = "Number of Shootings",
+   color = "" 
+  ) +
+  theme_minimal() +
+  scale_color_manual(
+    values = c("actual" = "steelblue", "ETS" = "red"),
+    labels = c("Actual Data", "ETS Prediction")
+  )
+
+accuracy_metrics = accuracy(forecast_ets, ts_data)
+print(accuracy_metrics)
+
+# Interpertation
+# The model performs reasonably well, as shown by relatively low RMSE(Root Mean Square Error) and MAE(Mean Error) values. Also as we'll discuss in the Biases' section even though the model seems to fit the data fairly well, it wil probably not be as acurate for future forecasts.
+
+```
+
+## Identifying Biases
+
+### Data Biases
+
+#### a. **Reporting Bias**
+
+-   **Description:** The dataset comprises reported shooting incidents. Not all shootings may be reported due to various reasons such as fear of retaliation, distrust in law enforcement, or misclassification of incidents.
+
+-   **Implication:** Under reporting can lead to an underestimation of the true number of shooting incidents, skewing spatial and temporal analyses.
+
+#### b. **Spatial Bias**
+
+-   **Description:** Areas with higher police presence may have more comprehensive reporting of shootings. Conversely, regions with lower police visibility might under report incidents.
+
+-   **Implication:** Spatial analyses, such as heatmaps and spatial distribution plots, might over represent high-police areas and under represent others, leading to misleading conclusions about shooting hotspots.
+
+#### c. Measurement Bias
+
+-   **Description:** Inaccuracies in data entry, such as incorrect Latitude and Longitude values, can introduce errors.
+
+-   **Implication:** Spatial visualizations and any analyses based on these variables may be distorted due to incorrect data points.
+
+------------------------------------------------------------------------
+
+### Analysis-Related Biases
+
+#### a. Confirmation Bias
+
+-   **Description:** Focusing on specific trends or patterns that confirm pre-existing beliefs or hypotheses while overlooking contradictory evidence.
+
+-   **Implication:** The interpretation of visualizations and modeling results may be biased towards confirming assumptions about shooting incidents without considering alternative explanations.
+
+#### b. Omitted Variable Bias
+
+-   **Description:** The analysis considers only a subset of possible variables (e.g., date, time, location, murder flag) and excludes other relevant factors such as socioeconomic status, police deployment levels, or demographic information.
+
+-   **Implication:** The model may miss critical predictors of shooting incidents, leading to incomplete or biased conclusions about factors influencing shootings.
+
+#### c. Over-fitting/Under-fitting in Modeling
+
+-   **Description:** The ETS model may either capture noise instead of the underlying pattern (over-fitting) or fail to capture essential patterns (under-fitting).
+
+-   **Implication:** Forecasts may not generalize well to future data, reducing the model's predictive validity.
+
+```{r}
+sessionInfo()
+```
