@@ -104,7 +104,8 @@ head(clean_data, 10)
 ```{r}
 # Load NYC map shapefile
 # I downloaded said shapefile from "https://data.cityofnewyork.us/City-Government/Borough-Boundaries/tqmj-j8zm"
-nyc_map = st_read("../geo_export_653555bb-6b25-48e9-b5f2-f1aa6f68d742.shp")
+# In this repository, you can also find the shapefiles, donwload them and have them in the same folder as your .Rmd file
+nyc_map = st_read("./geo_export_653555bb-6b25-48e9-b5f2-f1aa6f68d742.shp")
 
 # Split data into lethal and non-lethal shootings
 lethal_shootings= clean_data  %>% filter(STATISTICAL_MURDER_FLAG == "true")
